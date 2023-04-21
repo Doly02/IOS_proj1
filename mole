@@ -1,0 +1,464 @@
+#! /bin/sh 
+
+#   IOS ( operacni systemy ) I. projekt 
+#   vytvoril:   Tomas Dolak
+#   login:      xdolak09
+#   datum       21.03.2023   
+
+# deklarace promennych
+export LC_ALL=C
+export POSIXLY_CORRECT=yes
+FILE=""
+filename=
+GROUP=
+FILTERS=
+DIRECTORY=
+USER_NAME=$USER
+
+BEFORE_D=
+AFTER_D=
+#OPENING_DATE=$($BINSLOZKA/testdate '+%Y-%m-%d_%H-%M-%S')
+OPENING_DATE=$(date +'%Y-%m-%d_%H-%M-%S') #tohle pak prepnout!
+
+#definice jednotlivych prepinacu
+bool_g=false
+bool_m=false
+bool_a=false
+bool_b=false
+bool_list=false
+bool_secret_log=false
+
+# kontrola zadane cesty
+if [ ! -e "$MOLE_RC" ]; then 
+
+    mkdir -p "$(dirname "$MOLE_RC")"
+    touch "$MOLE_RC"
+
+fi 
+
+# vytvoreni slozky obsahujici logy
+if [ ! -d "$HOME"/.mole ]; then
+    mkdir "$HOME"/.mole
+fi
+
+#kontrola realpath 
+retst=$(realpath . > /dev/null 2>&1)
+tesat=$?
+if [ $tesat -ne 0 ]; then
+  echo "ERROR cesta k souboru sa nenasla" >&2
+  exit $tesat
+fi
+
+#aktualni adresar
+DIR=$(pwd)
+
+get_help()
+{
+    echo "GUIDE TO USE MOLE:
+    mole -h => for help
+    mole [-g GROUP] FILE => 
+    mole [-m] [FILTERS] [DIRECTORY]
+    mole list [FILTERS] [DIRECTORY]
+    " >&2
+    exit 0
+}
+
+play_editor()
+{
+    # v pripade ze promenna EDITOR neni nastavena, respektuje se promenna VISUAL, jestli ani promenna VISUAL neni nastavena
+    # spusti se editor vi
+    if [ -n "$EDITOR" ]; then
+        export EDITOR="$EDITOR"
+    elif [ -n "$VISUAL" ]; then
+        export EDITOR="$VISUAL"
+    else
+        export EDITOR="vi"
+    fi
+    $EDITOR "$FILE"
+    
+    # kontrola zda soubor .mole exituje, pokud ne vytvori se
+
+    # ulozeni cesty a souboru ktery byl otevren v EDITORU
+    # v pripade ze ma byt prirazena skupina
+    echo "$DIRECTORY/$filename $USER $OPENING_DATE $GROUP" >> $MOLE_RC
+    exit
+}
+
+POSITIONAL_ARGS=
+
+while [ "$#" -gt 0 ]; do
+case "$1" in 
+    -h)
+        get_help
+        shift
+        ;;
+    -g)
+        bool_g=true
+        GROUP="$2"
+        shift
+        shift
+        ;;
+    -m)
+        bool_m=true
+        shift
+        ;;
+    -a)
+        bool_a=true
+        AFTER_D="$2"
+        shift
+        shift
+        ;;
+    -b)
+        bool_b=true
+        BEFORE_D="$2"
+        shift
+        shift
+        ;;
+    list)
+        bool_list=true
+        shift
+        ;;
+    secret-log)
+        bool_secret_log=true
+        shift
+        ;;
+    *)
+        bool_positional_args=true
+        POSITIONAL_ARGS="${POSITIONAL_ARGS} $1"
+        shift # past argument
+        ;;
+    esac
+done
+
+if [ "$bool_positional_args" = true ]; then
+    set -- $POSITIONAL_ARGS
+fi
+
+# zpracovani argumentu -g
+if [ "$bool_g" = true ] && [ "$bool_list" = false ] && [ "$bool_m" = false ] && [ ! -d "$1" ] && [ "$#" -eq 1 ]; then 
+    FILE="$1"
+
+    filename=$(basename "$FILE")
+    dirpath=$(dirname "$FILE") 
+    if [ ! -e "$FILE" ]; then 
+
+    mkdir -p "$(dirname "$dirpath")"
+    touch "${dirpath}/${filename}"
+    fi 
+    
+    absolute_filepath=$(realpath "$FILE")
+    DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+    bool_g=false
+    play_editor
+    exit  
+fi
+
+# zpracovani argumentu -m
+if [ "$bool_m" = true ]; then
+        
+        # vyber zda je ci neni specifikovana slozka
+        DIRECTORY="$1"
+        if [ -z "$DIRECTORY" ]; then 
+            DIRECTORY=$DIR # pokud nebyl zadan adresar predpoklada se aktualni
+        fi
+
+        filter_records=$(grep "$DIRECTORY" "$MOLE_RC")
+
+        if [ "$bool_g" = true ]; then
+            # vytazeni vsech zaznamu, ktere aktualne odpovidaji
+            filter_records=$(echo "$filter_records" | awk -v s="$GROUP" '{if ($4 == s) print}')
+        fi
+
+        if [ "$bool_a" = true ]; then 
+            # vytazeni vsech zaznamu, ktere aktualne odpovidaji
+            filter_records=$(echo "$filter_records" | awk -F ' ' -v d="$AFTER_D" '{if (substr($3,1,10) > d) {print}}')
+        fi
+
+        if [ "$bool_b" = true ]; then 
+    
+            filter_records=$(echo "$filter_records" | awk -F ' ' -v d="$BEFORE_D" '{if (substr($3,1,10) < d) {print}}')
+        fi
+
+        if [ -z "$filter_records" ]; then
+            echo "No matching files"
+            exit 1
+        fi 
+
+        first_column=$(echo "$filter_records" | awk '{print $1}')
+        # pokud byl zadan -m tak skript vybere nejcasteji upravovany skript
+        ED_FILES=$(echo "$first_column" | sort | uniq -c | sort -nr | awk '{print $2}')
+            
+        # nejcasteji upravovany soubor 
+        FILE=$(echo "$ED_FILES" | head -n1 | awk '{ print $1 }') 
+            
+        while [ ! -f "$FILE" ]; do 
+            MOST_EDITED_FILE=$(echo "$ED_FILES" |  head -n1 | awk '{ print $1 }')  
+            # jestli stale existuje soubor ktery byl nejvice upravovany
+                
+            if [ -f "$MOST_EDITED_FILE" ]; then
+                FILE=$MOST_EDITED_FILE
+                break
+            else
+                # pokud neexistuje prvni radek se odstrani 
+                ED_FILES=$(echo "$ED_FILES" | sed '1d')
+                fi
+            # podminka pokud uz neexistuje zadny soubor ktery nebyl smazan 
+            if [ -z "$ED_FILES" ]; then
+                exit 1
+            fi
+                
+            done
+            # pojistka pro adresar cesty .
+            absolute_filepath=$(realpath "$FILE")
+            DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+            filename=$(basename "$FILE") #pro vypis    
+            play_editor
+            exit     
+fi
+
+if [ "$#" -eq 0 ] && [ "$bool_m" = false ] && [ "$bool_list" = false ] && [ "$bool_secret_log" = false ]; then
+    
+    #POKUD NEBYL VYBRANY ADRESAR BERE SE AKTUALNI ADRESAR
+    filtered_records=$(grep "^$DIR/[^/]*$" "$MOLE_RC")    
+    #pocet editovanych souboru
+    if [ "$bool_g" = true ]; then
+        filtered_records=$(echo "$filtered_records" | awk -F ' ' -v s="$GROUP" '{if ($4 == s) {print}}')
+    fi
+        
+    if [ "$bool_a" = true ]; then 
+        
+        filtered_records=$(echo "$filtered_records" | awk -F ' ' -v d="$AFTER_D" '{if (substr($3,1,10) > d) {print}}')
+    fi
+
+    # moznost -b
+    if [ "$bool_b" = true ]; then
+        
+        filtered_records=$(echo "$filtered_records" | awk -F ' ' -v d="$BEFORE_D" '{if (substr($3,1,10) < d) {print}}')
+    fi
+
+    first_column=$(echo "$filtered_records" | awk '{print $1}')
+    EDITED_FILES=$(echo "$first_column" | sort -u | wc -l)
+    if [ $EDITED_FILES -gt 0 ]; then
+       # posledni editovany soubor v danem adresari 
+       FILE=$(echo "$first_column" | awk -F ' ' '{print $1}' | tail -n 1)
+       
+        # vsechny potencialni editovane soubory z dane slozky
+       
+        next_possible_files="$first_column"
+        while [ ! -f "$FILE" ]; do 
+            
+            # posledni upravovany soubor z dane slozky
+            LAST_LINE=$(echo "$next_possible_files" | awk '{print $1}' | tail -n 1)
+
+            if [ -f "$LAST_LINE" ]; then
+                FILE=$LAST_LINE
+                break
+            else
+                next_possible_files=$(echo "$next_possible_files" | sed '$d')
+            fi
+            # podminka pokud uz neexistuje zadny soubor ktery nebyl smazan 
+            if [ -z "$ED_FILE" ]; then
+                exit 1
+            fi
+        done
+        filename=$(basename "$FILE")
+        absolute_filepath=$(realpath "$FILE")
+        DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+    fi
+    play_editor
+    exit
+fi
+
+if [ "$#" -eq 1 ] && [ "$bool_m" = false ] &&  [ "$bool_list" = false ] && [ "$bool_secret_log" = false ]; then 
+    
+    TEMPORARY="$1"
+    filename=$(basename "$TEMPORARY")
+    dirpath=$(dirname "$TEMPORARY") 
+    if [ ! -e "$TEMPORARY" ]; then 
+
+    mkdir -p "$(dirname "$dirpath")"
+    touch "${dirpath}/${filename}"
+    fi 
+
+    if [ -d "$TEMPORARY" ]; then 
+        
+        # ulozeni vsech potencialnich souboru z dane slozky
+        EDITED_FILES=$(awk -v temp="$TEMPORARY" '$0 ~ temp {print}' "$MOLE_RC" | grep -E "^$TEMPORARY[^/]*/[^/]*$")
+        
+        if [ "$bool_g" = true ]; then
+            EDITED_FILES=$(echo "$EDITED_FILES" | awk -F ' ' -v s="$GROUP" '{if ($4 == s) {print}}')
+        fi
+        
+        if [ "$bool_a" = true ]; then 
+            
+            EDITED_FILES=$(echo "$EDITED_FILES" | awk -F ' ' -v d="$AFTER_D" '{if (substr($3,1,10) > d) {print}}')
+        fi
+
+        # moznost -b
+        if [ "$bool_b" = true ]; then
+            
+            EDITED_FILES=$(echo "$EDITED_FILES" | awk -F ' ' -v d="$BEFORE_D" '{if (substr($3,1,10) < d) {print}}')
+        fi
+
+        #vyber vsech soubory, ktere byly editovany z dane slozky
+        NUMBER_OF_EDITED_FILES=$(echo "$EDITED_FILES" | sort -u | wc -l)
+        
+        if [ $NUMBER_OF_EDITED_FILES -gt 0 ]; then
+            # posledni editovany soubor v danem adresari 
+            FILE=$(echo "$EDITED_FILES" | tail -n1 | awk '{ print $1 }')
+            while [ ! -f "$FILE" ]; do 
+            
+            # posledni upravovany soubor z dane slozky
+            LAST_LINE=$(echo "$EDITED_FILES" | awk '{print $1}' | tail -n 1)
+
+            if [ -f "$LAST_LINE" ]; then
+                FILE=$LAST_LINE
+                break
+            else
+                EDITED_FILES=$(echo "$EDITED_FILES" | sed '$d')
+            fi
+            # podminka pokud uz neexistuje zadny soubor ktery nebyl smazan 
+            if [ -z "$ED_FILE" ]; then
+                exit 1
+            fi
+            done
+            filename=$(basename "$FILE")
+            absolute_filepath=$(realpath "$FILE")
+            DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+            play_editor
+            exit
+        fi
+    fi
+
+    # jestlize je to soubor 
+    if [ -f "$TEMPORARY" ]; then
+        FILE=$TEMPORARY
+        
+        absolute_filepath=$(realpath "$FILE")
+        DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+        filename=$(basename "$FILE")
+        play_editor
+        exit
+    fi
+
+    # v takovem pripade se script, spousti nad nazvem kterym neni oznacena zadna slozka ani soubor
+    if [ ! -f "$TEMPORARY" ]; then 
+        
+        absolute_filepath=$(realpath "$FILE")
+        DIRECTORY=$(dirname "$absolute_filepath") #pro vypis
+        filename=$(basename "$FILE")
+        play_editor
+        exit
+    fi
+fi
+
+if [ "$bool_list" = true ] && [ "$bool_m" = false ] && [ "$bool_secret_log" = false ]; then 
+
+    DIRECTORY=$1
+
+    if [ ! -d "$DIRECTORY" ]  && [ ! -z "$DIRECOTORY" ]; then
+        echo "That's a file"
+        exit 1
+    fi
+
+    if [ -z "$DIRECTORY" ]; then
+       
+        filtered_records=$(cat $MOLE_RC)
+    else
+            
+        filtered_records=$(grep "^$DIRECTORY/[^/]*$" "$MOLE_RC")
+    fi
+
+    if [ "$bool_g" = true ]; then
+        
+        filtered_records=$(echo "$filtered_records" | awk -v groups="$GROUP" 'BEGIN {split(groups, arr, ",")} {for (i in arr) if ($4 == arr[i]) print}')
+    fi
+        
+    if [ "$bool_a" = true ]; then 
+        
+        filtered_records=$(echo "$filtered_records" | awk -F ' ' -v d="$AFTER_D" '{if (substr($3,1,10) > d) {print}}')
+    fi
+
+        # moznost -b
+    if [ "$bool_b" = true ]; then
+        filtered_records=$(echo "$filtered_records" | awk -F ' ' -v d="$BEFORE_D" '{if (substr($3,1,10) < d) {print}}')
+    fi
+
+    if [ -z "$filtered_records" ]; then
+        exit 0
+    fi 
+
+        filtered_records=$(echo "$filtered_records" | awk '{
+        if (!seen[$1]) { # Pokud se první sloupec ještě nevyskytl, přidáme ho do pole seen
+        seen[$1] = $4
+        } else { # Jinak porovnáme hodnoty čtvrtých sloupců u unikátních záznamů
+        split(seen[$1], a, ",") # Rozdělíme hodnoty čtvrtých sloupců na pole
+        if ($4 != "" && !($4 in a)) { # Pokud je hodnota čtvrtého sloupce nenulová a nevyskytuje se u unikátního záznamu, přidáme ji k unikátnímu záznamu
+            if (seen[$1] !~ $4 && seen[$1] != "") seen[$1] = seen[$1] "," # Pokud již byla hodnota čtvrtého sloupce u unikátního záznamu a neopakuje se, přidáme čárku před novou hodnotu
+            if (seen[$1] !~ $4) seen[$1] = seen[$1] $4 # Přidáme novou hodnotu k unikátnímu záznamu
+        }
+        }
+        } END {
+        for (key in seen) { # Projdeme pole seen a vypíšeme unikátní záznamy s hodnotami čtvrtých sloupců
+        if (seen[key] == "") seen[key] = "-" # Pokud je hodnota prázdná, nahradíme ji pomlčkou
+        print key, seen[key]
+        }
+        }')
+
+        result=$(echo "$filtered_records" | awk '{gsub(/.*\//,"",$1); print $1":", $2}')
+        result=$(echo "$result" | sort -t ':' -k1 -fd | column -t -s' ' -o' ')
+        echo "$result" 
+    exit
+fi
+
+if [ "$bool_secret_log" = true ] && [ "$bool_list" = false ] && [ "$bool_g" = false ]; then
+
+    #vytvoreni tajneho logu 
+    LOG_FILE="$HOME"/.mole/log_"$USER"_"$OPENING_DATE"
+    touch "$LOG_FILE"
+
+    records=
+    if [ "$#" -eq 0 ]; then 
+        # ulozeni vsech zaznamu do promene
+        records=$(cat $MOLE_RC)
+    else 
+        for arg in "$@"; do            
+            path_to_file=$(realpath $arg)
+            
+            if [ -d "$path_to_file" ]; then 
+                DIRECTORIES="$DIRECTORIES $path_to_file"
+            else 
+                echo "$path_to_file it's not a directory"
+                exit 1
+            fi
+            shift
+        done 
+
+        for dir in $DIRECTORIES; do
+            
+            records="$records$(grep "^$dir/[^/]*$" "$MOLE_RC" | awk '{printf "%s\n", $0}')"
+            records="${records}
+            "
+        done
+        
+    fi
+    
+    if [ "$bool_a" = true ]; then 
+        records=$(echo "$records" | awk -F ' ' -v d="$AFTER_D" '{if (substr($3,1,10) > d) {print}}')
+    fi
+
+    # moznost -b
+    if [ "$bool_b" = true ]; then
+        records=$(echo "$records" | awk -F ' ' -v d="$BEFORE_D" '{if (substr($3,1,10) < d) {print}}')
+    fi
+
+    # vyfiltrovani prazdnych radku
+    records=$(echo "$records" | awk 'NF > 0')
+    final_records=$(echo "$records" | awk -F ' ' '{print $1, $3}' | LC_ALL=C sort -k1 -fd)
+    final_records=$(echo "$final_records" | awk '{gsub(/ /,";"); print}')
+
+    records=$(echo "$final_records" | awk -F ';' '{ if (!seen[$1]) { seen[$1] = $0; } else { seen[$1] = seen[$1] ";" $2; } } END { for (key in seen) print seen[key]; }' | sort -k1 -fd)
+    echo "$records" >> "$LOG_FILE"
+    bzip2 -z "$LOG_FILE"
+    exit
+fi
